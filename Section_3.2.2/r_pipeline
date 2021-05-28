@@ -1,0 +1,66 @@
+
+library(DESeq2)
+library(phyloseq)
+library(tidyverse)
+
+count_tab <- read.table("ZOTU_counts", header=T, sep="\t", row.names=1, check.names=F)
+
+tax_tab <- read.table("ZOTU.tax", header=T, sep="\t", row.names=1, check.names=F)
+tax_tab_mat <- as.matrix(tax_tab, mode='character')
+
+sample_info_tab <- read.table("filter_info.tsv", header=T, sep="\t", row.names=1, check.names=F)
+sample_info_tab$filter_series <- as.factor(sample_info_tab$filter_series)
+
+deseq_counts <- DESeqDataSetFromMatrix(count_tab, colData=sample_info_tab, design=~ 1)
+dds_vst <- varianceStabilizingTransformation(deseq_counts)
+dds_vst_count_tab <- assay(dds_vst)
+dds_vst_count_tab[dds_vst_count_tab<0] <- 0.0
+
+TAX <- tax_table(tax_tab_mat)
+
+OTU <- otu_table(dds_vst_count_tab, taxa_are_rows = TRUE)
+
+sampledata <- sample_data(sample_info_tab)
+
+physeq <- phyloseq(OTU, sampledata, TAX)
+
+ord <- ordinate(physeq, "PCoA")
+
+plot_ord <- plot_ordination(physeq, ord, type="sample")
+
+plot_ord2 <- plot_ord + geom_polygon(aes(fill=filter_series)) + geom_point(size=3)
+
+Colldds <- collapseReplicates(deseq_counts, groupby=sample_info_tab$filter_series, renameCols=TRUE)
+Colldds_tab <- assay(Colldds)
+
+sample_info_coll <- unique(sample_info_tab)
+rownames(sample_info_coll) <- sample_info_coll$filter_series
+
+sample_info_coll$retrieval_time <- as.POSIXct(sample_info_coll$retrieval_time, tryFormats='%m/%d/%Y %H:%M:%S')
+plot_filterhours <- ggplot(sample_info_coll, aes(x = sample_info_coll$retrieval_time, y = sample_info_coll$filtering_hours)) + geom_point() + geom_smooth()
+
+OTU_coll <- otu_table(Colldds_tab, taxa_are_rows = TRUE)
+sampledata_coll = sample_data(sample_info_coll)
+
+physeq2 <- phyloseq(OTU_coll, sampledata_coll, TAX)
+
+physeq2_rel <- transform_sample_counts(physeq2, function(x) x / sum(x))
+glom_lev4 <- tax_glom(physeq2_rel, taxrank = 'level4')
+data_glom_lev4 <- psmelt(glom_lev4)
+data_glom_lev4$level4 <- as.character(data_glom_lev4$level4)
+data_glom_lev4$Sample <- as.factor(data_glom_lev4$Sample)
+
+small <- unique(data_glom_lev4$level4[data_glom_lev4$Abundance < 0.01])
+large <- unique(data_glom_lev4$level4[data_glom_lev4$Abundance > 0.01])
+setdiff(small,large)
+
+data_glom_lev4$level4[data_glom_lev4$Abundance < 0.01] <- "< 1% abund."
+
+plot_taxbar <- ggplot(data_glom_lev4, aes(x=filter_series, y=Abundance, fill=level4)) + geom_bar(aes(), stat="identity", position="stack") + xlab("Samples") + ylab("Relative abundance") +
+scale_fill_manual(values = c(rep(c("#000000", "#E69F00", "#56B4E9", "#009E73","#F0E442", "#0072B2", "#D55E00", "#CC79A7"), length(unique(data_glom_lev4$level4))))) +
+theme(legend.position="bottom") + guides(fill=guide_legend(nrow=5))
+
+plot_rich <- plot_richness(physeq, x="filter_series", color="filter_series", measures=c("Shannon", "Simpson")) +
+geom_point(size=3) + geom_boxplot(aes(x=filter_series, y=value), alpha=0.1, width=0.4) +
+theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size= 10))
+
